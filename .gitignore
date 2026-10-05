@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Data & local databases (keeps API keys and local history private)
+data/*.sqlite3
+data/*.sqlite3-journal
+data/*.sqlite3-wal
+data/*.sqlite3-shm
+*.sqlite3
+
+# Environment variables & credentials
+.env
+.env.local
+*.key
+*.pem
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>OmniDimension Control Center</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Endpoint sequence">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">OD</div>
+          <div>
+            <strong>Omni Control</strong>
+            <span>API workspace</span>
+          </div>
+        </div>
+
+        <div class="connection-box">
+          <span id="connectionDot" class="status-dot"></span>
+          <div>
+            <strong id="connectionLabel">Checking setup</strong>
+            <span id="connectionDetail">Local database ready</span>
+          </div>
+        </div>
+
+        <nav id="groupNav" class="group-nav"></nav>
+
+        <div class="sidebar-actions">
+          <button class="sidebar-button" type="button" data-view="history">Request history</button>
+          <button class="sidebar-button" type="button" data-view="database">Saved payloads</button>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">API control center</p>
+            <h1>OmniDimension</h1>
+          </div>
+          <div class="settings-strip" aria-label="API settings">
+            <label>
+              <span>Base URL</span>
+              <input id="baseUrlInput" type="url" value="https://omnidim.io/api/v1" autocomplete="off">
+            </label>
+            <label>
+              <span>API key</span>
+              <input id="apiKeyInput" type="password" placeholder="Paste key to save" autocomplete="off">
+            </label>
+            <button id="saveSettingsBtn" class="button primary" type="button">Save</button>
+            <button id="clearKeyBtn" class="button subtle" type="button">Clear key</button>
+          </div>
+        </header>
+
+        <section class="summary-band" aria-label="Workspace summary">
+          <div class="stat">
+            <span>Total endpoints</span>
+            <strong id="totalEndpointCount">0</strong>
+          </div>
+          <div class="stat">
+            <span>Current group</span>
+            <strong id="currentGroupStat">Sessions</strong>
+          </div>
+          <div class="stat">
+            <span>Saved payloads</span>
+            <strong id="savedPayloadCount">0</strong>
+          </div>
+          <div class="stat">
+            <span>Last response</span>
+            <strong id="lastResponseStat">None</strong>
+          </div>
+        </section>
+
+        <section id="endpointView" class="content-layout">
+          <section class="endpoint-browser" aria-label="Endpoints">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Sequence</p>
+                <h2 id="groupTitle">Sessions</h2>
+                <p id="groupDescription">Create temporary browser voice sessions.</p>
+              </div>
+              <label class="search-box">
+                <span>Search</span>
+                <input id="searchInput" type="search" placeholder="Endpoint, method, path">
+              </label>
+            </div>
+            <div id="endpointList" class="endpoint-list"></div>
+          </section>
+
+          <section class="runner" aria-label="Request runner">
+            <div id="endpointDetail" class="empty-state">
+              <h2>Select an endpoint</h2>
+              <p>Choose the next action from the sequence to build and send a request.</p>
+            </div>
+          </section>
+        </section>
+
+        <section id="historyView" class="table-view" hidden>
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Database</p>
+              <h2>Request history</h2>
+              <p>Every request sent through the private proxy is recorded locally.</p>
+            </div>
+            <button id="clearHistoryBtn" class="button danger" type="button">Clear history</button>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Method</th>
+                  <th>Path</th>
+                  <th>Status</th>
+                  <th>Duration</th>
+                </tr>
+              </thead>
+              <tbody id="historyRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="databaseView" class="table-view" hidden>
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Database</p>
+              <h2>Saved payloads</h2>
+              <p>Reusable request bodies and query values saved in SQLite.</p>
+            </div>
+          </div>
+          <div id="savedPayloadList" class="saved-list"></div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
