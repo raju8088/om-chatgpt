@@ -1,16 +1,19 @@
 import argparse
 import datetime as dt
+import hmac
 import json
 import mimetypes
 import re
+import secrets
 import sqlite3
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -18,6 +21,50 @@ DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "omnidim_ui.sqlite3"
 DEFAULT_BASE_URL = "https://omnidim.io/api/v1"
 MAX_LOG_CHARS = 200_000
+
+CSRF_TOKEN = secrets.token_hex(32)
+
+STATIC_SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "style-src 'self' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "connect-src 'self'; "
+        "img-src 'self' data:; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self';"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+}
+
+
+def is_valid_host(host_header: str) -> bool:
+    if not host_header:
+        return False
+    host_clean = host_header.strip().lower()
+    return bool(re.fullmatch(r"(127\.0\.0\.1|localhost)(:\d+)?", host_clean))
+
+
+def is_valid_origin(origin_header: str) -> bool:
+    if not origin_header:
+        return True
+    try:
+        parsed = urllib.parse.urlparse(origin_header.strip().lower())
+        if parsed.scheme not in {"http", "https"}:
+            return False
+        hostname = parsed.hostname or ""
+        return hostname in {"127.0.0.1", "localhost"}
+    except Exception:
+        return False
+
+
+def is_valid_csrf(token_header: str) -> bool:
+    if not token_header:
+        return False
+    return hmac.compare_digest(token_header.strip(), CSRF_TOKEN)
 
 
 def endpoint_id(method, path):
@@ -558,19 +605,61 @@ class AppHandler(BaseHTTPRequestHandler):
         print(f"{self.address_string()} - {fmt % args}")
 
     def route(self):
+        req_id = uuid.uuid4().hex[:12]
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         try:
             if path.startswith("/api/"):
-                self.route_api(path, parsed)
+                # 1. Host header validation
+                host_header = self.headers.get("Host", "")
+                if not is_valid_host(host_header):
+                    self.send_json(
+                        {"ok": False, "error": "Invalid or forbidden Host header", "requestId": req_id},
+                        status=403,
+                    )
+                    return
+
+                # 2. Mutating requests validation (POST, PUT, PATCH, DELETE)
+                if self.command in {"POST", "PUT", "PATCH", "DELETE"}:
+                    content_type = self.headers.get("Content-Type", "")
+                    if not content_type.lower().startswith("application/json"):
+                        self.send_json(
+                            {"ok": False, "error": "Content-Type must be application/json", "requestId": req_id},
+                            status=415,
+                        )
+                        return
+
+                    origin = self.headers.get("Origin", "")
+                    if not is_valid_origin(origin):
+                        self.send_json(
+                            {"ok": False, "error": "Cross-origin request forbidden", "requestId": req_id},
+                            status=403,
+                        )
+                        return
+
+                    csrf_token = self.headers.get("X-CSRF-Token", "")
+                    if not is_valid_csrf(csrf_token):
+                        self.send_json(
+                            {"ok": False, "error": "Invalid or missing CSRF token", "requestId": req_id},
+                            status=403,
+                        )
+                        return
+
+                self.route_api(path, parsed, req_id)
                 return
             self.serve_static(path)
         except ValueError as exc:
-            self.send_json({"ok": False, "error": str(exc)}, status=400)
-        except Exception as exc:  # noqa: BLE001
-            self.send_json({"ok": False, "error": "Server error", "detail": str(exc)}, status=500)
+            print(f"[{req_id}] Validation error on {self.command} {path}: {exc}")
+            self.send_json({"ok": False, "error": str(exc), "requestId": req_id}, status=400)
+        except Exception:  # noqa: BLE001
+            print(f"[{req_id}] Server error on {self.command} {path}: {traceback.format_exc()}")
+            self.send_json({"ok": False, "error": "Internal server error", "requestId": req_id}, status=500)
 
-    def route_api(self, path, parsed):
+    def route_api(self, path, parsed, req_id):
+        if path == "/api/session" and self.command == "GET":
+            self.send_json({"ok": True, "csrfToken": CSRF_TOKEN})
+            return
+
         if path == "/api/health" and self.command == "GET":
             self.send_json({"ok": True, "time": now_iso(), "database": str(DB_PATH), "endpointCount": len(ENDPOINTS)})
             return
@@ -761,24 +850,46 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def serve_static(self, path):
         if path in {"", "/"}:
-            file_path = STATIC_DIR / "index.html"
+            file_path = (STATIC_DIR / "index.html").resolve()
         else:
             requested = path.lstrip("/")
             if requested.startswith("static/"):
                 requested = requested[len("static/") :]
             file_path = (STATIC_DIR / requested).resolve()
-            if not str(file_path).startswith(str(STATIC_DIR.resolve())):
+            try:
+                if not file_path.is_relative_to(STATIC_DIR.resolve()):
+                    self.send_error(403)
+                    return
+            except (ValueError, AttributeError):
                 self.send_error(403)
                 return
+
             if not file_path.exists() or not file_path.is_file():
-                file_path = STATIC_DIR / "index.html"
+                file_path = (STATIC_DIR / "index.html").resolve()
 
         content_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
         data = file_path.read_bytes()
+
+        if file_path.name == "index.html":
+            html_text = data.decode("utf-8", errors="replace")
+            meta_tag = f'<meta name="csrf-token" content="{CSRF_TOKEN}">'
+            if '<meta name="csrf-token"' in html_text:
+                html_text = re.sub(r'<meta name="csrf-token"[^>]*>', meta_tag, html_text)
+            else:
+                html_text = html_text.replace("</head>", f"    {meta_tag}\n  </head>")
+            data = html_text.encode("utf-8")
+
         self.send_response(200)
-        self.send_header("Content-Type", content_type)
+        content_header = (
+            f"{content_type}; charset=utf-8"
+            if ("text" in content_type or "json" in content_type)
+            else content_type
+        )
+        self.send_header("Content-Type", content_header)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        for hdr, val in STATIC_SECURITY_HEADERS.items():
+            self.send_header(hdr, val)
         self.end_headers()
         self.wfile.write(data)
 
@@ -788,6 +899,8 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        for hdr, val in STATIC_SECURITY_HEADERS.items():
+            self.send_header(hdr, val)
         self.end_headers()
         self.wfile.write(data)
 
@@ -797,6 +910,12 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
     args = parser.parse_args()
+
+    if args.host not in {"127.0.0.1", "localhost"}:
+        print("\n" + "!" * 78)
+        print(f"WARNING: Binding to non-local host '{args.host}'.")
+        print("THIS APPLICATION HAS NO USER AUTHENTICATION AND SHOULD ONLY BE RUN ON LOCALHOST!")
+        print("!" * 78 + "\n")
 
     init_db()
     server = ThreadingHTTPServer((args.host, args.port), AppHandler)

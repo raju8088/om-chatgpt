@@ -7,7 +7,8 @@ const state = {
   history: [],
   savedPayloads: [],
   view: "endpoints",
-  lastResponse: null
+  lastResponse: null,
+  csrfToken: ""
 };
 
 const refs = {};
@@ -17,9 +18,26 @@ document.addEventListener("DOMContentLoaded", init);
 async function init() {
   cacheRefs();
   bindStaticEvents();
+  await loadSession();
   await Promise.all([loadCatalog(), loadSettings(), loadHistory(), loadSavedPayloads()]);
   state.selectedEndpointId = state.endpoints[0]?.id || null;
   render();
+}
+
+async function loadSession() {
+  const metaToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute("content");
+  if (metaToken) {
+    state.csrfToken = metaToken;
+    return;
+  }
+  try {
+    const data = await api("/api/session");
+    if (data && data.csrfToken) {
+      state.csrfToken = data.csrfToken;
+    }
+  } catch (err) {
+    console.warn("Could not load CSRF token:", err);
+  }
 }
 
 function cacheRefs() {
@@ -64,12 +82,17 @@ function bindStaticEvents() {
 }
 
 async function api(path, options = {}) {
+  const method = (options.method || "GET").toUpperCase();
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {})
+  };
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && state.csrfToken) {
+    headers["X-CSRF-Token"] = state.csrfToken;
+  }
   const response = await fetch(path, {
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    }
+    headers
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
