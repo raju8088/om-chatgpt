@@ -3,6 +3,7 @@ import datetime as dt
 import hmac
 import json
 import mimetypes
+import os
 import re
 import secrets
 import sqlite3
@@ -15,14 +16,67 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+try:
+    import keyring
+except ImportError:
+    keyring = None
+
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "omnidim_ui.sqlite3"
 DEFAULT_BASE_URL = "https://omnidim.io/api/v1"
 MAX_LOG_CHARS = 200_000
+HISTORY_RETENTION_LIMIT = 500
 
 CSRF_TOKEN = secrets.token_hex(32)
+
+REDACT_KEYS = {
+    "password",
+    "token",
+    "secret",
+    "api_key",
+    "auth_token",
+    "sip_password",
+    "account_sid",
+    "authorization",
+}
+
+
+def redact_payload(obj):
+    if isinstance(obj, dict):
+        redacted = {}
+        for k, v in obj.items():
+            k_lower = str(k).lower().strip()
+            if any(target in k_lower for target in REDACT_KEYS):
+                redacted[k] = "[REDACTED]"
+            elif k_lower == "file" and isinstance(v, str) and len(v) > 100:
+                redacted[k] = f"[BASE64_FILE: {len(v)} chars redacted]"
+            else:
+                redacted[k] = redact_payload(v)
+        return redacted
+    if isinstance(obj, list):
+        return [redact_payload(item) for item in obj]
+    return obj
+
+
+def sanitize_url(url_str: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(url_str)
+        if not parsed.query:
+            return url_str
+        qs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        sanitized_pairs = []
+        for k, v in qs:
+            k_lower = k.lower().strip()
+            if any(target in k_lower for target in REDACT_KEYS):
+                sanitized_pairs.append((k, "[REDACTED]"))
+            else:
+                sanitized_pairs.append((k, v))
+        new_query = urllib.parse.urlencode(sanitized_pairs)
+        return urllib.parse.urlunparse(parsed._replace(query=new_query))
+    except Exception:
+        return url_str
 
 STATIC_SECURITY_HEADERS = {
     "Content-Security-Policy": (
@@ -502,15 +556,60 @@ def init_db():
         )
 
 
+def get_api_key():
+    # 1. Environment variable has highest priority
+    env_key = os.environ.get("OMNIDIM_API_KEY", "").strip()
+    if env_key:
+        return env_key, "env"
+
+    # 2. OS Keyring if available
+    if keyring:
+        try:
+            kr_key = keyring.get_password("omnidim_control_center", "api_key")
+            if kr_key and kr_key.strip():
+                return kr_key.strip(), "keyring"
+        except Exception:
+            pass
+
+    # 3. SQLite settings table
+    with get_db() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = 'api_key'").fetchone()
+        if row and row["value"]:
+            return row["value"].strip(), "db"
+
+    return "", "none"
+
+
+def secure_db_file():
+    if DB_PATH.exists():
+        try:
+            os.chmod(DB_PATH, 0o600)
+        except (OSError, NotImplementedError):
+            pass
+
+
 def read_settings(include_secret=False):
     with get_db() as conn:
         rows = conn.execute("SELECT key, value FROM settings").fetchall()
     raw = {row["key"]: row["value"] for row in rows}
-    api_key = raw.get("api_key", "")
+    api_key, source = get_api_key()
+
+    if source == "env":
+        notice = "API key loaded from OMNIDIM_API_KEY environment variable (recommended)."
+    elif source == "keyring":
+        notice = "API key loaded from OS Keychain via keyring (secure)."
+    elif source == "db":
+        notice = "API key saved in local SQLite database. Setting OMNIDIM_API_KEY environment variable or using OS keyring is recommended for higher security."
+    else:
+        notice = "No API key configured. Provide OMNIDIM_API_KEY in environment or save via UI."
+
     data = {
         "baseUrl": raw.get("base_url", DEFAULT_BASE_URL),
         "hasApiKey": bool(api_key),
+        "apiKeySource": source,
         "apiKeyPreview": f"...{api_key[-4:]}" if api_key else "",
+        "securityNotice": notice,
+        "retentionLimit": HISTORY_RETENTION_LIMIT,
     }
     if include_secret:
         data["apiKey"] = api_key
@@ -559,6 +658,9 @@ def parse_json_bytes(raw):
 
 
 def log_history(endpoint_id_value, method, path, url, status, ok, duration_ms, request_payload, response_payload):
+    clean_url = sanitize_url(url)
+    redacted_req = redact_payload(request_payload)
+    redacted_res = redact_payload(response_payload)
     with get_db() as conn:
         conn.execute(
             """
@@ -570,14 +672,24 @@ def log_history(endpoint_id_value, method, path, url, status, ok, duration_ms, r
                 endpoint_id_value,
                 method,
                 path,
-                url,
+                clean_url,
                 status,
                 1 if ok else 0,
                 duration_ms,
-                compact_json(request_payload),
-                compact_json(response_payload),
+                compact_json(redacted_req),
+                compact_json(redacted_res),
                 now_iso(),
             ),
+        )
+        # Auto-prune to keep only the last HISTORY_RETENTION_LIMIT records
+        conn.execute(
+            """
+            DELETE FROM request_history
+            WHERE id NOT IN (
+                SELECT id FROM request_history ORDER BY id DESC LIMIT ?
+            )
+            """,
+            (HISTORY_RETENTION_LIMIT,),
         )
 
 
@@ -681,11 +793,22 @@ class AppHandler(BaseHTTPRequestHandler):
                         raise ValueError("Base URL must start with https://")
                     save_setting("base_url", base_url.rstrip("/"))
                 if api_key:
+                    if keyring:
+                        try:
+                            keyring.set_password("omnidim_control_center", "api_key", api_key)
+                        except Exception:
+                            pass
                     save_setting("api_key", api_key)
+                    secure_db_file()
                 self.send_json(read_settings())
                 return
 
         if path == "/api/settings/api-key" and self.command == "DELETE":
+            if keyring:
+                try:
+                    keyring.delete_password("omnidim_control_center", "api_key")
+                except Exception:
+                    pass
             delete_setting("api_key")
             self.send_json(read_settings())
             return
@@ -709,7 +832,8 @@ class AppHandler(BaseHTTPRequestHandler):
             if self.command == "DELETE":
                 with get_db() as conn:
                     conn.execute("DELETE FROM request_history")
-                self.send_json({"ok": True})
+                    conn.execute("VACUUM")
+                self.send_json({"ok": True, "message": "History cleared successfully"})
                 return
 
         if path == "/api/saved-payloads":
@@ -733,6 +857,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 if missing:
                     raise ValueError(f"Missing fields: {', '.join(missing)}")
                 ts = now_iso()
+                sanitized_query = redact_payload(data.get("query", {}))
+                sanitized_body = redact_payload(data.get("body", {}))
                 with get_db() as conn:
                     cur = conn.execute(
                         """
@@ -745,8 +871,8 @@ class AppHandler(BaseHTTPRequestHandler):
                             data["name"],
                             data["method"],
                             data["path"],
-                            compact_json(data.get("query", {})),
-                            compact_json(data.get("body", {})),
+                            compact_json(sanitized_query),
+                            compact_json(sanitized_body),
                             ts,
                             ts,
                         ),

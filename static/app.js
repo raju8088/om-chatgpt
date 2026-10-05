@@ -140,10 +140,11 @@ function render() {
 function renderSettingsState() {
   refs.connectionDot.classList.toggle("ready", state.settings.hasApiKey);
   refs.connectionDot.classList.toggle("missing", !state.settings.hasApiKey);
-  refs.connectionLabel.textContent = state.settings.hasApiKey ? "API key saved" : "API key needed";
-  refs.connectionDetail.textContent = state.settings.hasApiKey
+  const src = state.settings.apiKeySource ? ` (${state.settings.apiKeySource.toUpperCase()})` : "";
+  refs.connectionLabel.textContent = state.settings.hasApiKey ? `API key ready${src}` : "API key needed";
+  refs.connectionDetail.textContent = state.settings.securityNotice || (state.settings.hasApiKey
     ? "Requests will use the private backend"
-    : "Save a key before sending";
+    : "Save a key before sending");
 }
 
 function renderGroupNav() {
