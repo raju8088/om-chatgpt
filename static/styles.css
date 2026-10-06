@@ -759,3 +759,112 @@ pre {
     width: fit-content;
   }
 }
+
+/* Dialog and Danger Modal */
+.danger-dialog {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #18181f;
+  color: #f0f0f5;
+  padding: 0;
+  max-width: 600px;
+  width: 90vw;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+}
+
+.danger-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+}
+
+.dialog-content {
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  gap: 16px;
+}
+
+.dialog-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.danger-badge {
+  display: inline-block;
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  width: fit-content;
+}
+
+.impact-callout {
+  background: rgba(245, 158, 11, 0.15);
+  border-left: 4px solid #f59e0b;
+  color: #fbbf24;
+  padding: 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.spec-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 10px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.spec-detail .label, .body-preview .label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.spec-detail code {
+  color: #60a5fa;
+  font-family: monospace;
+  word-break: break-all;
+}
+
+.body-preview pre {
+  max-height: 160px;
+  overflow-y: auto;
+  background: #0f0f13;
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  margin-top: 4px;
+}
+
+.confirm-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.confirm-prompt input {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.3);
+  color: #f0f0f5;
+  font-size: 14px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}

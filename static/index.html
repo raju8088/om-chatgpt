@@ -138,6 +138,34 @@
       </main>
     </div>
 
+    <dialog id="dangerDialog" class="danger-dialog">
+      <form method="dialog" class="dialog-content">
+        <div class="dialog-header">
+          <span class="danger-badge">⚠️ Protected Action Required</span>
+          <h2 id="modalActionTitle">Confirm Action</h2>
+        </div>
+        <div class="dialog-body">
+          <p id="modalImpactText" class="impact-callout"></p>
+          <div class="spec-detail">
+            <div><span class="label">Method:</span> <strong id="modalMethod"></strong></div>
+            <div><span class="label">Target URL:</span> <code id="modalUrl"></code></div>
+          </div>
+          <div class="body-preview">
+            <span class="label">Exact Request Body:</span>
+            <pre id="modalBodyPreview"></pre>
+          </div>
+          <label class="confirm-prompt">
+            <span id="modalPromptText">Type exact summary to confirm:</span>
+            <input id="modalConfirmInput" type="text" autocomplete="off" placeholder="Type confirmation phrase here">
+          </label>
+        </div>
+        <div class="dialog-actions">
+          <button id="modalCancelBtn" class="button" type="button">Cancel</button>
+          <button id="modalConfirmBtn" class="button danger" type="button" disabled>Confirm &amp; Execute</button>
+        </div>
+      </form>
+    </dialog>
+
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="/static/app.js"></script>
   </body>

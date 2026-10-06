@@ -347,13 +347,93 @@ function bindRunnerEvents(endpoint) {
 
 function updateResolvedPath(endpoint) {
   let path = endpoint.path;
+  let hasError = false;
   document.querySelectorAll(".path-param").forEach((input) => {
     const value = input.value.trim();
     if (value) {
+      if (/[/?#]|[\x00-\x1f\x7f]|\.\./.test(value)) {
+        hasError = true;
+        showToast(`Parameter '${input.dataset.param}' contains invalid characters.`);
+        return;
+      }
       path = path.replace(`{${input.dataset.param}}`, encodeURIComponent(value));
     }
   });
-  document.getElementById("resolvedPathInput").value = path;
+  if (!hasError) {
+    document.getElementById("resolvedPathInput").value = path;
+  }
+}
+
+function getEstimatedImpact(endpoint, path) {
+  const p = path.toLowerCase();
+  const m = endpoint.method.toUpperCase();
+  if (p.includes("/calls/dispatch") || p.includes("/bulk_call/create") || p.includes("/start")) {
+    return "⚠️ Telephony / Calling Impact: This will place or launch real outbound voice calls. These calls consume telephony minutes and account balance.";
+  }
+  if (p.includes("credits") || p.includes("transfer") || p.includes("revert")) {
+    return "⚠️ Financial / Credit Impact: This action will deduct, transfer, or modify real organization credits immediately.";
+  }
+  if (m === "DELETE" || p.includes("delete") || p.includes("release")) {
+    return "⚠️ Destructive Action: This action permanently deletes or releases the selected resource from OmniDimension.";
+  }
+  if (p.includes("/import/")) {
+    return "⚠️ Telephony Configuration: This imports external carrier or SIP trunk credentials into the system.";
+  }
+  return "⚠️ Protected Action: This endpoint modifies live production resources or account access.";
+}
+
+function promptDangerousConfirmation(endpoint, payload) {
+  return new Promise((resolve) => {
+    const dialog = document.getElementById("dangerDialog");
+    if (!dialog || typeof dialog.showModal !== "function") {
+      const ok = window.confirm(`Confirm dangerous action '${endpoint.summary}'?\n\nURL: ${buildFullUrl(state.settings.baseUrl, payload.path, payload.query)}`);
+      resolve(ok ? endpoint.summary : null);
+      return;
+    }
+
+    const title = document.getElementById("modalActionTitle");
+    const impact = document.getElementById("modalImpactText");
+    const method = document.getElementById("modalMethod");
+    const urlEl = document.getElementById("modalUrl");
+    const preview = document.getElementById("modalBodyPreview");
+    const promptText = document.getElementById("modalPromptText");
+    const input = document.getElementById("modalConfirmInput");
+    const confirmBtn = document.getElementById("modalConfirmBtn");
+    const cancelBtn = document.getElementById("modalCancelBtn");
+
+    title.textContent = `Confirm: ${endpoint.summary}`;
+    impact.textContent = getEstimatedImpact(endpoint, payload.path);
+    method.textContent = endpoint.method;
+    urlEl.textContent = buildFullUrl(state.settings.baseUrl, payload.path, payload.query);
+    preview.textContent = payload.body ? pretty(payload.body) : "(No request body)";
+    promptText.textContent = `Type "${endpoint.summary}" to confirm:`;
+    input.value = "";
+    confirmBtn.disabled = true;
+
+    function onInput() {
+      confirmBtn.disabled = input.value.trim() !== endpoint.summary.trim();
+    }
+    input.addEventListener("input", onInput);
+
+    function cleanup() {
+      input.removeEventListener("input", onInput);
+      confirmBtn.onclick = null;
+      cancelBtn.onclick = null;
+      dialog.close();
+    }
+
+    confirmBtn.onclick = () => {
+      cleanup();
+      resolve(endpoint.summary);
+    };
+
+    cancelBtn.onclick = () => {
+      cleanup();
+      resolve(null);
+    };
+
+    dialog.showModal();
+  });
 }
 
 async function addPdfToBody() {
@@ -383,15 +463,17 @@ function readFileAsBase64(file) {
 
 async function runEndpoint(endpoint) {
   try {
+    const payload = readRunnerPayload(endpoint);
+
     if (endpoint.danger) {
-      const confirmed = document.getElementById("confirmDangerInput")?.checked;
-      if (!confirmed) {
-        showToast("Confirm the protected action first.");
+      const confirmation = await promptDangerousConfirmation(endpoint, payload);
+      if (!confirmation) {
+        showToast("Action cancelled.");
         return;
       }
+      payload.confirm = confirmation;
     }
 
-    const payload = readRunnerPayload(endpoint);
     const meta = document.getElementById("responseMeta");
     const output = document.getElementById("responseOutput");
     meta.textContent = "Sending request";

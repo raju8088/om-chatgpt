@@ -276,6 +276,7 @@ GROUPS = [
                     "custom_variables": {"name": "Demo User", "interest": "Home Insurance"},
                     "metadata": {"crm_lead_id": "lead_9876", "source": "website_form"},
                 },
+                danger=True,
             ),
             ep("Bulk Calls", "GET", "/calls/bulk_call/{bulk_call_id}", "Bulk call details"),
             ep("Bulk Calls", "PUT", "/calls/bulk_call/{bulk_call_id}", "Bulk call actions", {"action": "pause"}),
@@ -301,6 +302,7 @@ GROUPS = [
                         {"to_number": "+15559876543", "custom_variables": {"contact_name": "Priya"}},
                     ]
                 },
+                danger=True,
             ),
             ep("Bulk Calls", "POST", "/calls/bulk_call/{bulk_call_id}/start", "Start a draft campaign", {}, danger=True),
             ep("Bulk Calls", "PUT", "/calls/bulk_call/{bulk_call_id}/concurrency", "Change concurrency", {"concurrent_call_limit": 5}),
@@ -377,6 +379,7 @@ GROUPS = [
                 "/phone_number/import/twilio",
                 "Import Twilio number",
                 {"phone_number": "+15551234567", "account_sid": "ACxxxxxxxx", "auth_token": "twilio_auth_token"},
+                danger=True,
             ),
             ep(
                 "Phone Numbers",
@@ -390,6 +393,7 @@ GROUPS = [
                     "api_key": "exotel_api_key",
                     "api_token": "exotel_api_token",
                 },
+                danger=True,
             ),
             ep(
                 "Phone Numbers",
@@ -404,6 +408,7 @@ GROUPS = [
                     "sip_password": "password",
                     "sip_trunk_name": "Main trunk",
                 },
+                danger=True,
             ),
         ],
     },
@@ -470,10 +475,11 @@ GROUPS = [
                 "/reseller/users/add",
                 "Add user",
                 {"name": "Demo User", "email": "demo@example.com", "password": "temporary-password"},
+                danger=True,
             ),
-            ep("Reseller/Admin", "POST", "/reseller/users/access-control", "Update user access control", {"user_id": 1234, "access": {"is_bots_menu_access": True}}),
-            ep("Reseller/Admin", "POST", "/reseller/users/expiry", "Update user expiry", {"user_id": 1234, "expiry_date": "2026-12-31"}),
-            ep("Reseller/Admin", "POST", "/reseller/concurrency", "Set child concurrency limit", {"user_id": 1234, "concurrent_call_limit": 3}),
+            ep("Reseller/Admin", "POST", "/reseller/users/access-control", "Update user access control", {"user_id": 1234, "access": {"is_bots_menu_access": True}}, danger=True),
+            ep("Reseller/Admin", "POST", "/reseller/users/expiry", "Update user expiry", {"user_id": 1234, "expiry_date": "2026-12-31"}, danger=True),
+            ep("Reseller/Admin", "POST", "/reseller/concurrency", "Set child concurrency limit", {"user_id": 1234, "concurrent_call_limit": 3}, danger=True),
             ep("Reseller/Admin", "POST", "/reseller/credits/calculate", "Calculate credit operation", {"user_id": 1234, "credits": 100}),
             ep("Reseller/Admin", "POST", "/reseller/credits/transfer", "Transfer credits to a child", {"user_id": 1234, "credits": 100}, danger=True),
             ep("Reseller/Admin", "POST", "/reseller/credits/revert", "Revert credits", {"user_id": 1234, "credits": 50}, danger=True),
@@ -486,6 +492,7 @@ GROUPS = [
                 "/reseller/kyc/steps/{step}",
                 "Submit a KYC verification step",
                 {"user_id": 1234, "region": "US", "carrier": "carrier-1", "name": "Demo User", "email": "demo@example.com", "phone": "+15551234567"},
+                danger=True,
             ),
         ],
     },
@@ -493,6 +500,33 @@ GROUPS = [
 
 
 ENDPOINTS = [endpoint for group in GROUPS for endpoint in group["endpoints"]]
+
+_TEMPLATE_REGEX_CACHE = {}
+
+
+def template_to_regex(template: str):
+    if template not in _TEMPLATE_REGEX_CACHE:
+        pattern = "^" + re.sub(r"\{([^}]+)\}", r"(?P<\1>[^/?#]+)", template) + "$"
+        _TEMPLATE_REGEX_CACHE[template] = re.compile(pattern)
+    return _TEMPLATE_REGEX_CACHE[template]
+
+
+def match_endpoint(method: str, path: str):
+    method = method.upper()
+    if ".." in path or "?" in path or "#" in path:
+        raise ValueError(f"Path contains illegal characters: {path}")
+    for endpoint in ENDPOINTS:
+        if endpoint["method"] != method:
+            continue
+        regex = template_to_regex(endpoint["path"])
+        m = regex.fullmatch(path)
+        if m:
+            params = m.groupdict()
+            for name, val in params.items():
+                if any(c in val for c in ("/", "..", "?", "#")) or any(ord(c) < 32 or ord(c) == 127 for c in val):
+                    raise ValueError(f"Path parameter '{name}' contains illegal characters: {val}")
+            return endpoint, params
+    return None, {}
 
 
 def now_iso():
@@ -888,18 +922,18 @@ class AppHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/run" and self.command == "POST":
-            self.run_omni_request()
+            self.run_omni_request(req_id)
             return
 
-        self.send_json({"ok": False, "error": "Not found"}, status=404)
+        self.send_json({"ok": False, "error": "Not found", "requestId": req_id}, status=404)
 
-    def run_omni_request(self):
+    def run_omni_request(self, req_id):
         data = self.read_json()
         method = data.get("method", "GET").upper()
         path = data.get("path", "")
         query = data.get("query") or {}
         body = data.get("body", None)
-        endpoint_id_value = data.get("endpointId", endpoint_id(method, path))
+        confirm = data.get("confirm", "").strip()
 
         if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
             raise ValueError("Unsupported HTTP method")
@@ -910,10 +944,48 @@ class AppHandler(BaseHTTPRequestHandler):
         if not isinstance(query, dict):
             raise ValueError("Query must be a JSON object")
 
+        # 1. Match against registered endpoint allowlist
+        matched_endpoint, path_params = match_endpoint(method, path)
+        if not matched_endpoint:
+            self.send_json(
+                {
+                    "ok": False,
+                    "error": f"Endpoint {method} {path} is not in the registered API allowlist.",
+                    "requestId": req_id,
+                },
+                status=403,
+            )
+            return
+
+        endpoint_id_value = data.get("endpointId", matched_endpoint["id"])
+
+        # 2. Server-side enforcement of danger flag
+        if matched_endpoint.get("danger"):
+            expected_summary = matched_endpoint["summary"].strip()
+            if confirm != expected_summary:
+                self.send_json(
+                    {
+                        "ok": False,
+                        "error": f"Dangerous action requires explicit confirmation phrase: '{expected_summary}'",
+                        "danger": True,
+                        "requiredConfirm": expected_summary,
+                        "requestId": req_id,
+                    },
+                    status=428,
+                )
+                return
+
         settings = read_settings(include_secret=True)
         api_key = settings.get("apiKey", "")
         if not api_key:
-            self.send_json({"ok": False, "error": "Save your OmniDimension API key before sending requests."}, status=400)
+            self.send_json(
+                {
+                    "ok": False,
+                    "error": "Save your OmniDimension API key before sending requests.",
+                    "requestId": req_id,
+                },
+                status=400,
+            )
             return
 
         url = build_url(settings["baseUrl"], path, query)
